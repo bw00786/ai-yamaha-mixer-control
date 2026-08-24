@@ -146,24 +146,30 @@ class ChannelChain:
                 self.hpf_freq = clamp("hpf_freq", freq)
             self._rebuild_filters()
 
-    def set_eq_band(self, freq: float, gain_db: float, q: float = 1.4):
+    def set_eq_band(self, freq: float, gain_db: float, q: float = 1.4) -> bool:
         """Add a band, or adjust the existing band nearest in frequency
-        (within a third of an octave). Cumulative gains are clamped."""
+        (within a third of an octave). Cumulative gains are clamped.
+
+        Returns True if a parameter actually changed; False when the band was
+        already at the clamp, so callers can avoid logging phantom actions."""
         freq = clamp("eq_freq", freq)
         gain_db = clamp("eq_gain_db", gain_db)
         q = clamp("eq_q", q)
         with self._lock:
             for band in self.eq:
                 if abs(math.log2(band["freq"] / freq)) < 0.33:
-                    band["gain_db"] = clamp("eq_gain_db",
-                                            band["gain_db"] + gain_db)
+                    new_gain = clamp("eq_gain_db", band["gain_db"] + gain_db)
+                    if new_gain == band["gain_db"] and q == band["q"]:
+                        return False
+                    band["gain_db"] = new_gain
                     band["q"] = q
                     self._rebuild_filters()
-                    return
+                    return True
             if len(self.eq) >= MAX_EQ_BANDS:
                 self.eq.pop(0)  # oldest band makes room
             self.eq.append({"freq": freq, "gain_db": gain_db, "q": q, "on": True})
             self._rebuild_filters()
+            return True
 
     def set_notch(self, freq: float, protected: bool = False) -> float:
         """Drop a deep, tight notch (feedback killer). Notches within a sixth

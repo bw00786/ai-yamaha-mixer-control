@@ -38,6 +38,10 @@ CONFIRM_SCANS = 2
 CHANNEL_COOLDOWN_S = 4.0
 GLOBAL_LIMIT = 6             # max auto-notches per rolling minute
 ACTIVITY_GATE_DB = -55.0
+# A notch that doesn't hold a ring (moving feedback, gain-before-feedback
+# problem) shouldn't be re-placed and re-logged forever. After this many
+# re-notches of the same ring, advise the operator once instead.
+MAX_RING_RENOTCHES = 2
 
 
 class AutoGuard:
@@ -50,6 +54,9 @@ class AutoGuard:
         self._last_notch: dict[int, float] = {}  # ch -> monotonic time
         self._recent: deque[float] = deque(maxlen=GLOBAL_LIMIT)
         self.events: deque[dict] = deque(maxlen=20)
+        # (ch, 1/6-octave bucket) -> re-notch count / escalation latch
+        self._ring_notches: dict[tuple[int, int], int] = {}
+        self._ring_escalated: set[tuple[int, int]] = set()
 
     # ------------------------------------------------------------- control
     def configure(self, enabled: bool | None = None,
@@ -58,6 +65,8 @@ class AutoGuard:
             self.enabled = bool(enabled)
             if not self.enabled:
                 self._pending.clear()
+                self._ring_notches.clear()
+                self._ring_escalated.clear()
         if excluded is not None:
             self.excluded = {int(c) for c in excluded}
 
@@ -138,7 +147,32 @@ class AutoGuard:
                     now - self._recent[0] < 60.0:
                 continue                      # global rate limit reached
 
+            rkey = (ch1, int(round(np.log2(hit["freq"]) * 6)))
+            if self._ring_notches.get(rkey, 0) >= MAX_RING_RENOTCHES:
+                # notch isn't holding this ring - advise the operator once,
+                # then stay quiet instead of re-notching every cooldown
+                self._pending.pop(ch1, None)
+                self._last_notch[ch1] = now
+                if rkey not in self._ring_escalated:
+                    self._ring_escalated.add(rkey)
+                    event = {
+                        "time": time.strftime("%H:%M:%S"),
+                        "channel": ch1,
+                        "name": name_of(ch1),
+                        "freq": hit["freq"],
+                        "dominance_db": hit["dominance_db"],
+                        "also_heard_on": [name_of(c) for c in g["others"]],
+                        "advisory": True,
+                        "reason": f"ring at {hit['freq']:.0f} Hz not holding "
+                                  f"after {MAX_RING_RENOTCHES} notches - check "
+                                  "gain / mic position",
+                    }
+                    self.events.appendleft(event)
+                    catches.append(event)
+                continue
+
             freq = self.dsp.chains[ch1 - 1].set_notch(hit["freq"])
+            self._ring_notches[rkey] = self._ring_notches.get(rkey, 0) + 1
             self._last_notch[ch1] = now
             self._recent.append(now)
             self._pending.pop(ch1, None)

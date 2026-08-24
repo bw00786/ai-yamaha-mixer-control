@@ -40,6 +40,9 @@ PERSIST = {"hot": 2, "mud": 3, "mask": 3, "loud": 3}
 COOLDOWN_S = {"hot": 10.0, "mask": 30.0, "loud": 60.0}
 GLOBAL_LIMIT = 4          # actions per rolling minute
 MASK_SCORE = 0.70
+# A single-channel dip can't always break a two-channel collision, and the EQ
+# band saturates at the clamp. Cap real cuts per pair, then hand it to the human.
+MAX_MASK_CUTS = 3
 
 
 def _band_center(label: str) -> float | None:
@@ -58,12 +61,16 @@ class AutoMixer:
         self._last: dict[tuple, float] = {}
         self._recent: deque[float] = deque(maxlen=GLOBAL_LIMIT)
         self.events: deque[dict] = deque(maxlen=20)
+        self._mask_cuts: dict[tuple, int] = {}
+        self._mask_escalated: set[tuple] = set()
 
     def configure(self, enabled: bool | None = None):
         if enabled is not None:
             self.enabled = bool(enabled)
             if not self.enabled:
                 self._counts.clear()
+                self._mask_cuts.clear()
+                self._mask_escalated.clear()
 
     # ------------------------------------------------------------ plumbing
     def _bump(self, key: tuple, condition: bool) -> bool:
@@ -150,7 +157,22 @@ class AutoMixer:
                 center = _band_center(p.band)
                 if center is None:
                     continue
-                self.dsp.chains[quieter.channel - 1].set_eq_band(center, -2.0)
+                # Escalate instead of cutting forever: after MAX_MASK_CUTS real
+                # cuts the collision is the operator's to resolve (arrangement /
+                # levels), so advise once rather than logging phantom no-ops.
+                if self._mask_cuts.get(key, 0) >= MAX_MASK_CUTS:
+                    if key not in self._mask_escalated:
+                        self._mask_escalated.add(key)
+                        actions.append(self._record(
+                            key, now, name_of(quieter.channel), "advisory",
+                            f"masking with {name_of(other.channel)} in "
+                            f"{p.band} unresolved after {MAX_MASK_CUTS} cuts - "
+                            "check arrangement / levels", log_only=True))
+                    continue
+                if not self.dsp.chains[quieter.channel - 1].set_eq_band(
+                        center, -2.0):
+                    continue        # band already at the clamp - no real change
+                self._mask_cuts[key] = self._mask_cuts.get(key, 0) + 1
                 actions.append(self._record(
                     key, now, name_of(quieter.channel),
                     f"-2 dB @ {center:.0f} Hz",
