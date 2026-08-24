@@ -158,9 +158,9 @@ With the DSP engaged, type plain English into the **Talk to the mix** bar:
 - "the keys are muddy" · "brighter overheads" · "snare louder"
 - "more echo on channel 5"
 
-Commands are interpreted by Qwen3.6 when an endpoint is configured; a
-clause-aware rule parser handles the common phrasings offline (it knows
-studio-speak: "vocals" finds a channel named VOX, "guitar" finds GTR).
+Commands are interpreted by Claude (claude-sonnet-5) when an API key is
+configured; a clause-aware rule parser handles the common phrasings offline
+(it knows studio-speak: "vocals" finds a channel named VOX, "guitar" finds GTR).
 Effects run per channel in the real-time chain:
 HPF → EQ → comp → **reverb** (Freeverb comb/allpass network) → **delay** → trim,
 all on circular delay lines (O(N) per block). Wet levels clamp at 60%,
@@ -236,10 +236,9 @@ is created automatically on first connect.
 - AI move sheet: press **Analyze** → concrete console moves
   (`gain −4 dB on CH03`, `cut 3 dB at 300 Hz on GTR`, `HPF 100 Hz on VOX`)
   with reasons and priorities, rendered as a checklist
-- Two advice engines: **Qwen3.6** (via any OpenAI-compatible endpoint —
-  local Ollama, Alibaba Cloud Model Studio, or OpenRouter) or a deterministic
-  rule engine — the LLM's output is schema-validated and clamped before it
-  reaches the UI (LLM proposes, deterministic code decides)
+- Two advice engines: **Claude** (`claude-sonnet-5` via the Anthropic API) or
+  a deterministic rule engine — the LLM's output is schema-validated and
+  clamped before it reaches the UI (LLM proposes, deterministic code decides)
 - Learning memory (RAG): every suggestion and the operator's approve/reject/
   modify decision is logged to Postgres, building a per-channel track record
   that is fed back into both the LLM prompt and the rule engine to bias which
@@ -256,19 +255,10 @@ Backend (Python 3.11+):
 cd backend
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-# Qwen3.6 — pick ONE of these setups (defaults target local Ollama):
-
-# a) Local & offline (recommended for live venues):
-#      ollama pull qwen3.6   — then no env vars needed at all
-# b) Alibaba Cloud Model Studio:
-#      export QWEN_BASE_URL=https://dashscope-intl.aliyuncs.com/compatible-mode/v1
-#      export QWEN_MODEL=qwen3.6-plus
-#      export QWEN_API_KEY=sk-...
-# c) OpenRouter:
-#      export QWEN_BASE_URL=https://openrouter.ai/api/v1
-#      export QWEN_MODEL=qwen/qwen3.6-plus
-#      export QWEN_API_KEY=sk-or-...
-# If no endpoint is reachable, the advisor silently falls back to rules.
+# Claude (Anthropic API) powers the advisor and command interpreter:
+#      export ANTHROPIC_API_KEY=sk-ant-...
+#      export CLAUDE_MODEL=claude-sonnet-5   # optional, this is the default
+# If no API key is set, the advisor silently falls back to rules.
 
 # Optional — learning memory (RAG). Point at any Postgres to persist the
 # per-channel approve/reject track record across services; omit it and the
@@ -310,7 +300,7 @@ backend/app/
   ai/commander.py      natural-language command → effect ops (LLM + rules)
   audio/metering.py    peak/RMS meters, LUFS via pyloudnorm
   analysis/engine.py   band energies, masking pairs, gain staging
-  ai/advisor.py        Qwen advisor + rule fallback, schema-gated, RAG-primed
+  ai/advisor.py        Claude advisor + rule fallback, schema-gated, RAG-primed
   memory/store.py      Postgres learning store: logs moves + decisions, RAG
   mixer/bridge.py      control abstraction (advisory today; RCP stub)
   main.py              FastAPI + WebSocket broadcaster

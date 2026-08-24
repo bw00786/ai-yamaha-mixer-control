@@ -5,7 +5,7 @@ guitar and make the kick punchier" into structured effect operations, then
 executes them through the DSPController's clamped setters.
 
 Two interpreters, same pattern as the advisor:
-  1. Qwen3.6 (any OpenAI-compatible endpoint) — rich language understanding.
+  1. Claude (claude-sonnet-5) via the Anthropic API — rich language understanding.
   2. Regex fallback — handles the common phrasings offline.
 
 LLM proposes, deterministic code decides: ops are schema-validated and every
@@ -23,11 +23,8 @@ from pydantic import BaseModel
 from ..dsp.controller import DSPController
 from ..dsp.feedback import detect_feedback
 
-MODEL = os.environ.get("QWEN_MODEL", "qwen3.6")
-BASE_URL = os.environ.get("QWEN_BASE_URL", "http://localhost:11434/v1")
-API_KEY = os.environ.get("QWEN_API_KEY", "ollama")
-
-_THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
+MODEL = os.environ.get("CLAUDE_MODEL", "claude-sonnet-5")
+API_KEY = os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("CLAUDE_API_KEY")
 
 
 class EffectOp(BaseModel):
@@ -125,18 +122,18 @@ def _execute(result: CommandResult, dsp: DSPController,
 
 # ---------------------------------------------------------------------- LLM
 def _llm_interpret(text: str, channels: list[dict]) -> CommandResult:
-    from openai import OpenAI
-    client = OpenAI(base_url=BASE_URL, api_key=API_KEY)
-    resp = client.chat.completions.create(
+    from anthropic import Anthropic
+    client = Anthropic(api_key=API_KEY)
+    resp = client.messages.create(
         model=MODEL, max_tokens=900, temperature=0.2,
+        system=SYSTEM,
         messages=[
-            {"role": "system", "content": SYSTEM},
             {"role": "user", "content": json.dumps(
                 {"request": text, "channels": channels})},
         ],
     )
-    out = resp.choices[0].message.content or ""
-    out = _THINK_RE.sub("", out).strip()
+    out = "".join(b.text for b in resp.content
+                  if getattr(b, "type", None) == "text").strip()
     out = out.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
     data = json.loads(out)
     ops = []
