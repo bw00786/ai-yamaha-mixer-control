@@ -5,6 +5,6 @@ numpy>=1.26
 scipy>=1.13
 pyloudnorm>=0.1.1
 pydantic>=2.7
-openai>=1.40         # OpenAI-compatible client for Qwen3.6 (Ollama / DashScope / OpenRouter)
+anthropic>=0.40      # Claude API client (advisor + command interpreter)
 python-dotenv>=1.0
 psycopg[binary,pool]>=3.1   # Postgres-backed operator-approval memory (learning over time)

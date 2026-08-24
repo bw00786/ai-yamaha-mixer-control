@@ -1,37 +1,30 @@
-"""AI mix advisor — Qwen3.6 edition.
+"""AI mix advisor — Anthropic Claude edition.
 
 Turns a MixSnapshot into concrete, prioritized moves an operator can apply
 on the MGX16 (fader, EQ, HPF, comp, pan). Two engines:
 
-  1. LLM engine  — Qwen3.6 via any OpenAI-compatible endpoint:
-       - Alibaba Cloud Model Studio (DashScope compatible-mode)
-       - OpenRouter (model: qwen/qwen3.6-plus)
-       - Local Ollama (model: qwen3.6, no API key, works offline at a venue)
+  1. LLM engine  — Claude (claude-sonnet-5) via the Anthropic API.
   2. Rule engine — deterministic heuristics; always available, also the
                    safety fallback if the LLM call fails.
 
-Configure with env vars (defaults target local Ollama):
-  QWEN_BASE_URL   e.g. http://localhost:11434/v1
-                       https://openrouter.ai/api/v1
-                       https://dashscope-intl.aliyuncs.com/compatible-mode/v1
-  QWEN_MODEL      e.g. qwen3.6 | qwen/qwen3.6-plus | qwen3.6-plus
-  QWEN_API_KEY    required for cloud endpoints; ignored by Ollama
+Configure with env vars:
+  ANTHROPIC_API_KEY   your Anthropic API key (required for the LLM engine)
+  CLAUDE_MODEL        model id, defaults to claude-sonnet-5
 
 Design principle (LLM proposes, deterministic code decides): every LLM move
-is validated against the schema and clamped before it reaches the UI.
+is validated against the schema and clamped before it reaches the UI. With no
+API key the advisor silently falls back to the deterministic rule engine.
 """
 from __future__ import annotations
 
 import json
 import os
-import re
 
 from ..models import AdvisorResponse, MixMove, MixSnapshot
 from ..memory.store import MemoryStore
 
-BASE_URL = os.environ.get("QWEN_BASE_URL", "http://localhost:11434/v1")
-MODEL = os.environ.get("QWEN_MODEL", "qwen3.6")
-API_KEY = os.environ.get("QWEN_API_KEY", "ollama")  # Ollama ignores the key
+MODEL = os.environ.get("CLAUDE_MODEL", "claude-sonnet-5")
+API_KEY = os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("CLAUDE_API_KEY")
 
 SYSTEM = """You are a live-sound mixing engineer assisting an operator on a
 Yamaha MGX16 digital console. You receive a JSON snapshot of the current mix
@@ -49,8 +42,6 @@ as historically approved, and avoid or de-prioritize moves noted as
 historically rejected for that channel, unless the current snapshot shows a
 clear, different problem."""
 
-_THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
-
 
 def suggest(snapshot: MixSnapshot, memory: MemoryStore | None = None) -> AdvisorResponse:
     try:
@@ -61,8 +52,8 @@ def suggest(snapshot: MixSnapshot, memory: MemoryStore | None = None) -> Advisor
 
 # ---------------------------------------------------------------------- LLM
 def _llm_suggest(snapshot: MixSnapshot, memory: MemoryStore | None) -> AdvisorResponse:
-    from openai import OpenAI
-    client = OpenAI(base_url=BASE_URL, api_key=API_KEY)
+    from anthropic import Anthropic
+    client = Anthropic(api_key=API_KEY)
 
     state = snapshot.model_dump()
     # trim inactive channels to keep the prompt small
@@ -75,19 +66,18 @@ def _llm_suggest(snapshot: MixSnapshot, memory: MemoryStore | None) -> AdvisorRe
         if history:
             system = f"{SYSTEM}\n\nLearned history for this room:\n{history}"
 
-    resp = client.chat.completions.create(
+    resp = client.messages.create(
         model=MODEL,
         max_tokens=1600,
         temperature=0.3,
+        system=system,
         messages=[
-            {"role": "system", "content": system},
             {"role": "user", "content": json.dumps(state)},
         ],
     )
-    text = resp.choices[0].message.content or ""
-    # Qwen3.6 has an integrated thinking mode; strip any reasoning block,
-    # then any markdown fences, before parsing.
-    text = _THINK_RE.sub("", text).strip()
+    text = "".join(b.text for b in resp.content
+                   if getattr(b, "type", None) == "text").strip()
+    # tolerate a stray markdown fence around the JSON
     text = text.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
     data = json.loads(text)
 
